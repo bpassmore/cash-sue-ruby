@@ -26,8 +26,9 @@ import subprocess
 # Version 2.4: Fixed extra embed logs for base files in duplicates; clarified dry-run embed logs (e.g., "from simulated renamed path"); ensured embed only triggers after successful (simulated) rename.
 # Version 2.5: Restored missing custom_media_sort function and applied it to media_files sorting (from v1.3/v1.8) to prioritize non-duplicates.
 # Version 2.6: Fixed UnicodeDecodeError by using encoding='utf-8', errors='ignore' in subprocess.run. Added pre-embed check to rename misnamed .HEIC (actually JPEG) to .JPG. Improved verify_embed: use utcfromtimestamp for dates, float tolerance (1e-6) for GPS, handle empty exiftool output, log mismatch details.
+# Version 2.7: Added JSON title caching per directory to avoid repeated file reads in find_misnamed_json, improving performance.
 
-VERSION = "2.6"
+VERSION = "2.7"
 
 # Setup logging to file with real-time flushing
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -96,6 +97,13 @@ def get_json_title(json_path):
         logger.error(f"Error reading JSON title from {json_path}: {e}")
         return ''
 
+def load_json_titles(dir_path, json_files):
+    cache = {}
+    for jf in json_files:
+        json_path = os.path.join(dir_path, jf)
+        cache[jf] = get_json_title(json_path)
+    return cache
+
 def extract_suffix(filename):
     base, ext = os.path.splitext(filename)
     if ext.lower() == '.json':
@@ -140,7 +148,7 @@ def pre_analyze(root_dir):
 
     return suffix_variants, avg_len, min_prefix_factor, step_divisor
 
-def find_misnamed_json(dir_path, base_name, media_ext, num_suffix, json_files, used_jsons, suffix_variants, avg_len, min_prefix_factor, step_divisor):
+def find_misnamed_json(dir_path, base_name, media_ext, num_suffix, json_files, json_titles, used_jsons, suffix_variants, avg_len, min_prefix_factor, step_divisor):
     full_prefix = base_name + media_ext
     expected_title = base_name + media_ext  # For duplicates, title may lack num_suffix
     expected_title_lower = expected_title.lower()
@@ -167,7 +175,7 @@ def find_misnamed_json(dir_path, base_name, media_ext, num_suffix, json_files, u
                 json_path = os.path.join(dir_path, file)
                 if json_path in used_jsons:
                     continue
-                title = get_json_title(json_path)
+                title = json_titles.get(file, '')
                 title_lower = title.lower()
                 if title_lower == expected_title_lower:
                     return json_path
@@ -189,7 +197,7 @@ def find_misnamed_json(dir_path, base_name, media_ext, num_suffix, json_files, u
                 json_path = os.path.join(dir_path, file)
                 if json_path in used_jsons:
                     continue
-                title = get_json_title(json_path)
+                title = json_titles.get(file, '')
                 if title.lower() == expected_title_lower:
                     return json_path
                 if is_matching_title(title, expected_title, media_ext):
@@ -206,7 +214,7 @@ def find_misnamed_json(dir_path, base_name, media_ext, num_suffix, json_files, u
                 json_path = os.path.join(dir_path, file)
                 if json_path in used_jsons:
                     continue
-                title = get_json_title(json_path)
+                title = json_titles.get(file, '')
                 if title.lower() == expected_title_lower:
                     return json_path
                 if is_matching_title(title, expected_title, media_ext):
@@ -350,6 +358,7 @@ def process_directory(root_dir, dry_run=False, suffix_variants=None, avg_len=30,
         media_files = [f for f in files if is_media_file(f)]
         media_files = sorted(media_files, key=custom_media_sort)
         json_files = [f for f in files if f.lower().endswith('.json')]
+        json_titles = load_json_titles(subdir, json_files)
         used_jsons = set()
         
         for file in media_files:
@@ -357,7 +366,19 @@ def process_directory(root_dir, dry_run=False, suffix_variants=None, avg_len=30,
             media_name, media_ext = os.path.splitext(file)
             base_name, num_suffix = parse_duplicate_number(media_name)
             
-            json_path = find_misnamed_json(subdir, base_name, media_ext, num_suffix, json_files, used_jsons, suffix_variants, avg_len, min_prefix_factor, step_divisor)
+            json_path = find_misnamed_json(
+                subdir,
+                base_name,
+                media_ext,
+                num_suffix,
+                json_files,
+                json_titles,
+                used_jsons,
+                suffix_variants,
+                avg_len,
+                min_prefix_factor,
+                step_divisor,
+            )
             if json_path:
                 preferred_json_name = f"{base_name}{num_suffix}{media_ext}.supplemental-metadata.json"
                 preferred_json_path = os.path.join(subdir, preferred_json_name)
